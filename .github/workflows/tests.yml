@@ -1,0 +1,67 @@
+name: CI
+env:
+  PROJECT_ROOT: /root/go/src/github.com/infrawatch/sg-agent
+
+  TEST_IMAGE: registry.access.redhat.com/ubi8
+  COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
+
+on: [push, pull_request]
+
+jobs:
+  golangci:
+    name: Linting
+    runs-on: ubuntu-20.04
+    container: 'quay.io/plmr/sg-core-ci'
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '1.16'
+      - name: tidy
+        run: go mod tidy
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v2
+        with:
+          # Caching conflicts happen in GHA, so just disable for now
+          skip-pkg-cache: true
+          skip-build-cache: true
+          # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
+          version: v1.33
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Check if apputils repository has same topic branch
+        id: apputils_branch
+        continue-on-error: true
+        run: |
+          git ls-remote --exit-code --heads https://github.com/infrawatch/apputils.git "$(echo ${GITHUB_REF#refs/heads/})"
+      - name: Check if sg-core repository has same topic branch
+        id: core_branch
+        continue-on-error: true
+        run: |
+          git ls-remote --exit-code --heads https://github.com/infrawatch/sg-core.git "$(echo ${GITHUB_REF#refs/heads/})"
+      - name: Run sg-agent unit test suite
+        run: |
+          docker run --name=testsuite -uroot --network host -e COVERALLS_REPO_TOKEN \
+            --volume ${{ github.workspace }}:$PROJECT_ROOT:z --workdir $PROJECT_ROOT \
+            -e GITHUB_REF -e FOUND_CORE_BRANCH=${{ steps.core_branch.outcome }} \
+            -e FOUND_APPUTILS_BRANCH=${{ steps.apputils_branch.outcome }} \
+            $TEST_IMAGE bash $PROJECT_ROOT/ci/unit/run_tests.sh
+      - name: Send coverage
+        uses: shogo82148/actions-goveralls@v1
+        with:
+          path-to-profile: ${{ github.workspace }}/profile.cov
+  image-build:
+    name: Image build
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Verify image builds
+        run: |
+          docker build --tag infrawatch/sg-agent:latest --file build/Dockerfile .
+      - name: List images
+        run: |
+          docker images
